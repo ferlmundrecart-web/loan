@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Loan Tracker</title>
+
+<style>
+body {font-family: Arial, sans-serif; background:#f4f6f8; padding:20px;}
+h1{text-align:center}
+.container{max-width:900px;margin:auto}
+.card{background:#fff;padding:20px;margin-bottom:20px;border-radius:8px;box-shadow:0 2px 6px rgba(0,0,0,.1)}
+table{width:100%;border-collapse:collapse;margin-top:10px}
+th,td{border:1px solid #ddd;padding:8px;text-align:center}
+th{background:#1a73e8;color:#fff}
+.paid{color:green;font-weight:bold}
+button{padding:8px 14px;margin:4px;cursor:pointer;border-radius:4px}
+.add-button{background:#1a73e8;color:#fff;border:none;border-radius:4px}
+.add-button:hover{background:#155ab6}
+#adminForm,#adminControls,#undoBanner{text-align:center}
+#undoBanner{display:none;background:#fff;padding:10px;margin:10px auto;border-radius:6px}
+#addForm input{margin:4px 0; padding:6px; width:200px;}
+</style>
+</head>
+
+<body>
+
+<h1>📋 Loan & Payment Dashboard</h1>
+
+<!-- Admin Login -->
+<div id="adminForm">
+  <h2>Admin Login</h2>
+  <input id="adminUsername" placeholder="Username"><br>
+  <input id="adminPassword" type="password" placeholder="Password"><br><br>
+  <button class="add-button" onclick="adminLogin()">Login</button>
+</div>
+
+<!-- Admin Controls -->
+<div id="adminControls" style="display:none; text-align:center;">
+  <button class="add-button" id="showAddFormBtn" onclick="showAddForm()">Add Borrower</button>
+
+  <div id="addForm" style="margin-top:10px; display:none;">
+    <input id="nameInput" placeholder="Borrower Name"><br>
+    <input id="amountInput" type="number" placeholder="Loan Amount"><br>
+    <input id="monthsInput" type="number" placeholder="Months to Pay"><br>
+    <input id="releaseInput" type="date" placeholder="Release Date"><br>
+    <input id="paidInput" type="number" placeholder="Already Paid"><br><br>
+    <button class="add-button" onclick="addBorrower()">Save Borrower</button>
+  </div>
+</div>
+
+<div id="undoBanner">
+  <span id="undoText"></span>
+  <button onclick="undoDelete()">Undo</button>
+</div>
+
+<div class="container" id="borrowers"></div>
+
+<script>
+const ADMINS = [{ user:"Yuna@081724", pass:"Yuna@081724" }];
+const borrowersDiv = document.getElementById("borrowers");
+let borrowers = [];
+let backups = {};
+let deletedTemp = null;
+let deleteTimer = null;
+let adminLoggedIn = false;
+
+/* ====== HASH ====== */
+async function hash(text){
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0")).join("");
+}
+
+/* ====== LOAD ====== */
+window.onload = () => {
+  borrowers = JSON.parse(localStorage.getItem("borrowers") || "[]");
+  renderBorrowers();
+};
+
+/* ====== LOGIN ====== */
+async function adminLogin(){
+  const u = document.getElementById("adminUsername").value.trim();
+  const p = document.getElementById("adminPassword").value.trim();
+  for(const a of ADMINS){
+    if(u===a.user && await hash(p) === await hash(a.pass)){
+      adminLoggedIn = true;
+      localStorage.setItem("admin","true");
+      localStorage.setItem("adminUser",u);
+      document.getElementById("adminForm").style.display="none";
+      document.getElementById("adminControls").style.display="block";
+      renderBorrowers();
+      return;
+    }
+  }
+  alert("Wrong login");
+}
+
+/* ====== SHOW ADD FORM ====== */
+function showAddForm(){
+  document.getElementById("addForm").style.display = "block";
+  document.getElementById("showAddFormBtn").style.display = "none";
+}
+
+/* ====== ADD BORROWER ====== */
+function addBorrower(){
+  if(!adminLoggedIn) return alert("Admin login required");
+  const releaseDate = document.getElementById("releaseInput").value;
+  if(!releaseDate) return alert("Release Date is required");
+
+  const b = {
+    id: Date.now(),
+    name: document.getElementById("nameInput").value.trim(),
+    amount: +document.getElementById("amountInput").value,
+    months: +document.getElementById("monthsInput").value,
+    releaseDate: releaseDate,
+    interest: 0.05, // 5% simple interest per month
+    paid: +document.getElementById("paidInput").value || 0
+  };
+
+  if(!b.name) return alert("Name is required");
+  if(b.amount <= 0 || b.months <= 0) return alert("Invalid amount or months");
+
+  borrowers.push(b);
+  backups[b.id] = JSON.parse(JSON.stringify(b));
+  save();
+  renderBorrowers();
+
+  document.getElementById("nameInput").value = "";
+  document.getElementById("amountInput").value = "";
+  document.getElementById("monthsInput").value = "";
+  document.getElementById("releaseInput").value = "";
+  document.getElementById("paidInput").value = "";
+
+  document.getElementById("addForm").style.display = "none";
+  document.getElementById("showAddFormBtn").style.display = "inline-block";
+}
+
+/* ====== GENERATE PAYMENT DATES (5th & 20th) ====== */
+function getPaymentDates(releaseDate, months){
+  const dates = [];
+  let current = new Date(releaseDate);
+  const totalPayments = months * 2; // 2 per month
+  let count = 0;
+
+  while(count < totalPayments){
+    const year = current.getFullYear();
+    const month = current.getMonth();
+
+    // 5th of month
+    const d5 = new Date(year, month, 5);
+    if(d5 > current) { dates.push(d5); count++; if(count>=totalPayments) break; }
+
+    // 20th of month
+    const d20 = new Date(year, month, 20);
+    if(d20 > current) { dates.push(d20); count++; if(count>=totalPayments) break; }
+
+    // move to next month
+    current = new Date(year, month+1, 1);
+  }
+
+  return dates;
+}
+
+/* ====== RENDER BORROWERS ====== */
+function renderBorrowers(){
+  borrowersDiv.innerHTML = "";
+  borrowers.forEach(b => displayBorrower(b));
+}
+
+/* ====== DISPLAY BORROWER CARD ====== */
+function displayBorrower(b){
+  const card = document.createElement("div");
+  card.className = "card";
+  card.dataset.id = b.id;
+
+  const totalAmount = b.amount + b.amount * b.interest * b.months;
+  const monthlyPayment = totalAmount / b.months;
+  const halfPayment = monthlyPayment / 2;
+
+  const payDates = getPaymentDates(b.releaseDate, b.months);
+
+  let rows = "";
+  for(let i=0; i<payDates.length; i++){
+    rows += `<tr>
+      <td>${payDates[i].toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'})}</td>
+      <td>₱${halfPayment.toFixed(2)}</td>
+      <td>${i<b.paid
+        ? "<span class='paid'>PAID</span>"
+        : "<button onclick='markPaid(this)'>Pay</button>"
+      }</td>
+    </tr>`;
+  }
+
+  card.innerHTML = `<h3>${b.name}</h3>
+    <p>Loan Amount: ₱${b.amount.toFixed(2)}</p>
+    <p>Months to Pay: ${b.months}</p>
+    <p>Release Date: ${b.releaseDate}</p>
+    <p>Interest: 5% monthly</p>
+    <p>Total Loan with Interest: ₱${totalAmount.toFixed(2)}</p>
+    <table>
+      <tr><th>Date</th><th>Amount</th><th>Status</th></tr>
+      ${rows}
+    </table>
+    <button class="add-button" onclick="saveBorrower(${b.id})">Save Changes</button>
+    <button class="add-button" onclick="undoBorrower(${b.id})">Undo</button>
+    <button class="add-button" onclick="deleteBorrower(${b.id})">Delete</button>
+  `;
+
+  borrowersDiv.appendChild(card);
+}
+
+/* ====== PAY ====== */
+function markPaid(btn){
+  if(!adminLoggedIn) return alert("Admin login required");
+  const card = btn.closest(".card");
+  const id = +card.dataset.id;
+  const borrower = borrowers.find(x => x.id === id);
+
+  borrower.paid++;
+  save();
+  btn.parentElement.innerHTML = "<span class='paid'>PAID</span>";
+}
+
+/* ====== SAVE / UNDO ====== */
+function saveBorrower(id){
+  if(!adminLoggedIn) return alert("Admin login required");
+  const card = document.querySelector(`.card[data-id='${id}']`);
+  const paidCount = card.querySelectorAll(".paid").length;
+  const b = borrowers.find(x => x.id === id);
+  b.paid = paidCount;
+  backups[id] = JSON.parse(JSON.stringify(b));
+  save();
+  alert("Changes saved permanently!");
+}
+
+function undoBorrower(id){
+  if(!adminLoggedIn) return alert("Admin login required");
+  if(!backups[id]) return alert("Nothing to undo");
+  const index = borrowers.findIndex(b=>b.id===id);
+  borrowers[index] = JSON.parse(JSON.stringify(backups[id]));
+  save();
+  renderBorrowers();
+}
+
+/* ====== DELETE ====== */
+function deleteBorrower(id){
+  if(!adminLoggedIn) return alert("Admin login required");
+  if(!confirm("Delete this borrower? You can undo within 10 seconds.")) return;
+
+  const index = borrowers.findIndex(b=>b.id===id);
+  deletedTemp = borrowers[index];
+  borrowers.splice(index,1);
+  save();
+  renderBorrowers();
+
+  undoText.innerText = `${deletedTemp.name} deleted`;
+  undoBanner.style.display = "block";
+
+  clearTimeout(deleteTimer);
+  deleteTimer = setTimeout(()=>{
+    deletedTemp=null;
+    undoBanner.style.display="none";
+  },10000);
+}
+
+function undoDelete(){
+  if(!adminLoggedIn) return alert("Admin login required");
+  if(!deletedTemp) return;
+  borrowers.push(deletedTemp);
+  backups[deletedTemp.id] = JSON.parse(JSON.stringify(deletedTemp));
+  save();
+  renderBorrowers();
+  deletedTemp=null;
+  undoBanner.style.display="none";
+}
+
+/* ====== STORAGE ====== */
+function save(){
+  localStorage.setItem("borrowers", JSON.stringify(borrowers));
+}
+</script>
+
+</body>
+</html>
